@@ -6,7 +6,7 @@ def get_message_json(
 
     Args:
         model_name (str): The model for which to generate the message.
-        prompt (str): The text prompt to be included in the message.
+        prompt (str | list): The text prompt to be included in the message.
         role (str): The role of the message (default: "user").
         skip_image_token (bool): Whether to skip adding image tokens (default: False).
         num_images (int): Number of image tokens to add (default: 1).
@@ -101,11 +101,11 @@ def get_message_json(
 
 def apply_chat_template(
     processor,
-    config,
-    prompt,
+    config: dict,
+    prompt: str | list,
     add_generation_prompt=True,
     return_messages=False,
-    num_images=1,
+    num_images=1
 ):
     config = config if isinstance(config, dict) else config.__dict__
 
@@ -155,11 +155,12 @@ def apply_chat_template(
         return messages[-1]
 
     if "chat_template" in processor.__dict__.keys():
-        return processor.apply_chat_template(
+        result = processor.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=add_generation_prompt,
         )
+        return result
 
     elif "tokenizer" in processor.__dict__.keys():
         return processor.tokenizer.apply_chat_template(
