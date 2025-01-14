@@ -101,11 +101,11 @@ def get_message_json(
 
 def apply_chat_template(
     processor,
-    config,
-    prompt,
+    config: dict,
+    prompt: str,
     add_generation_prompt=True,
     return_messages=False,
-    num_images=1,
+    num_images=1
 ):
     config = config if isinstance(config, dict) else config.__dict__
 
@@ -147,6 +147,8 @@ def apply_chat_template(
                         messages.append(process_single_prompt(p, is_first))
     else:
         messages = [process_single_prompt(prompt)]
+
+    print('MESSAGES', messages)
 
     if return_messages:
         return messages

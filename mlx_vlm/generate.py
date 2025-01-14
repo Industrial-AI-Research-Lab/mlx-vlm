@@ -94,6 +94,10 @@ def main():
 
     prompt = codecs.decode(args.prompt, "unicode_escape")
 
+    if args.system is not None:
+        system_prompt = codecs.decode(args.system, "unicode_escape")
+        prompt = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
+
     prompt = apply_chat_template(processor, config, prompt, num_images=len(args.image))
 
     kwargs = {}
