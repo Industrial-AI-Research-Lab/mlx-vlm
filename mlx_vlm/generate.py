@@ -82,8 +82,6 @@ def get_model_and_processors(model_path, adapter_path):
     model, processor = load(
         model_path, adapter_path=adapter_path, lazy=False, trust_remote_code=True
     )
-    from .trainer.utils import find_all_linear_names
-    print(find_all_linear_names(model))
     return model, processor, config
 
 
