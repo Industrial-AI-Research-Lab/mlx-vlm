@@ -3,7 +3,7 @@ import json
 import logging
 
 import mlx.optimizers as optim
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 from tqdm import tqdm
 
 from .prompt_utils import apply_chat_template
@@ -28,7 +28,14 @@ def main(args):
     image_processor = load_image_processor(args.model_path)
 
     logger.info(f"\033[32mLoading dataset from {args.dataset}\033[0m")
-    dataset = load_dataset(args.dataset, split=args.split)
+    try:
+        if args.dataset.endswith('.json'):
+            dataset = load_dataset('json', data_files=args.dataset, split=args.split)
+        else:
+            dataset = load_dataset(dataset=args.dataset, split=args.split)
+    except ValueError as e:
+        print('ERROR', e)
+        dataset = load_from_disk(args.dataset)
 
     if "messages" not in dataset.column_names:
         raise ValueError("Dataset must have a 'messages' column")

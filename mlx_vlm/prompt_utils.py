@@ -155,12 +155,11 @@ def apply_chat_template(
         return messages[-1]
 
     if "chat_template" in processor.__dict__.keys():
-        result = processor.apply_chat_template(
+        return processor.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=add_generation_prompt,
         )
-        return result
 
     elif "tokenizer" in processor.__dict__.keys():
         return processor.tokenizer.apply_chat_template(
