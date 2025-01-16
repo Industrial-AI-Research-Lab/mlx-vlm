@@ -5,6 +5,7 @@ import json
 import logging
 import shutil
 import time
+import base64
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -671,6 +672,7 @@ def convert(
     trust_remote_code: bool = True,
 ):
     print("[INFO] Loading")
+    # add local model conversion
     model_path = get_model_path(hf_path, revision=revision)
     model, config, processor = fetch_from_hub(
         model_path, lazy=True, trust_remote_code=trust_remote_code
@@ -678,6 +680,7 @@ def convert(
 
     weights = dict(tree_flatten(model.parameters()))
     dtype = mx.float16 if quantize else getattr(mx, dtype)
+    print('DTYPE', dtype)
     weights = {k: v.astype(dtype) for k, v in weights.items()}
 
     if quantize and dequantize:
@@ -717,6 +720,11 @@ def load_image(image_source: Union[str, Path, BytesIO], timeout: int = 10):
     """
     Helper function to load an image from either a URL or file.
     """
+    if isinstance(image_source, str):
+        try:
+            image_source = BytesIO(base64.b64decode(image_source))
+        except Exception as e:
+            pass
     if isinstance(image_source, BytesIO) or Path(image_source).is_file():
         # for base64 encoded images
         try:
@@ -734,6 +742,8 @@ def load_image(image_source: Union[str, Path, BytesIO], timeout: int = 10):
             raise ValueError(
                 f"Failed to load image from URL: {image_source} with error {e}"
             ) from e
+    # elif isinstance(image_source, str):
+        # image = Image.open(BytesIO(base64.b64decode(image_source)))
     else:
         raise ValueError(
             f"The image {image_source} must be a valid URL or existing file."
@@ -759,7 +769,6 @@ def process_image(img, resize_shape, image_processor):
 
 
 def prepare_inputs(processor, images, prompts, image_token_index, resize_shape=None):
-
     if not isinstance(images, list):
         images = [images]
 
