@@ -2,6 +2,7 @@ import argparse
 from .utils import convert
 
 def convert_external_adapter(model, adapter_source, adapter_path):
+
     raise NotImplementedError("Convert external adapter is not implemented")
 
 def configure_parser() -> argparse.ArgumentParser:
