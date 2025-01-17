@@ -1,7 +1,8 @@
 import argparse
 from .utils import convert
 
-def convert_external_adapter(model, adapter_name, adapter_path):
+def convert_external_adapter(model, adapter_source, adapter_path):
+
     raise NotImplementedError("Convert external adapter is not implemented")
 
 def configure_parser() -> argparse.ArgumentParser:
@@ -24,12 +25,11 @@ def configure_parser() -> argparse.ArgumentParser:
         help="Type to save the parameters, ignored if -q is given.",
         type=str,
         choices=["float16", "bfloat16", "float32"],
-        default="float16",
     )
     parser.add_argument(
         "--output-path",
         type=str,
-        default="adapters",
+        default="converted_adapter",
         help="Path to save the trained adapter",
     )
     args = parser.parse_args()

@@ -80,6 +80,7 @@ def find_all_linear_names(model):
         "vision_resampler",
         "aligner",
     ]
+    # print('ALL MODULES IN MODULE', model.named_modules())
     for name, module in model.named_modules():
         if any(mm_keyword in name for mm_keyword in multimodal_keywords):
             continue
@@ -89,6 +90,7 @@ def find_all_linear_names(model):
 
     if "lm_head" in lora_module_names:  # needed for 16-bit
         lora_module_names.remove("lm_head")
+    # print('RESULTING MODULES', list(lora_module_names))
     return list(lora_module_names)
 
 
@@ -156,5 +158,6 @@ def apply_lora_layers(model: nn.Module, adapter_path: str) -> nn.Module:
 
     # TODO: Use custom adapter name
     model.load_weights(str(adapter_path / "adapters.safetensors"), strict=False)
+    print('MODEL MODULES', model.named_modules())
 
     return model

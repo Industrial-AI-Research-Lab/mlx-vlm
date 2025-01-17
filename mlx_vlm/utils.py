@@ -1081,6 +1081,7 @@ def generate(
     prompt: str,
     image: Union[str, List[str]] = None,
     verbose: bool = False,
+    return_service_info: bool = False,
     **kwargs,
 ) -> str:
     """
@@ -1127,5 +1128,16 @@ def generate(
             f"{last_response.generation_tps:.3f} tokens-per-sec"
         )
         print(f"Peak memory: {last_response.peak_memory:.3f} GB")
+
+    if return_service_info:
+        service_info = (
+            f"Prompt: {last_response.prompt_tokens} tokens, "
+            f"{last_response.prompt_tps:.3f} tokens-per-sec\n"
+            f"Generation: {last_response.generation_tokens} tokens, "
+            f"{last_response.generation_tps:.3f} tokens-per-sec\n"
+            f"Peak memory: {last_response.peak_memory:.3f} GB"
+        )
+
+        return text, service_info
 
     return text
