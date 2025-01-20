@@ -158,6 +158,5 @@ def apply_lora_layers(model: nn.Module, adapter_path: str) -> nn.Module:
 
     # TODO: Use custom adapter name
     model.load_weights(str(adapter_path / "adapters.safetensors"), strict=False)
-    print('MODEL MODULES', model.named_modules())
 
     return model
