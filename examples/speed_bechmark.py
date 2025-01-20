@@ -2,27 +2,36 @@ from mlx_vlm import load, apply_chat_template, generate
 from mlx_vlm.utils import load_image
 from mlx_vlm.utils import process_image
 
+# Note: checked on Python 3.11.11
+
 img_filepath = ["test_img.png"]
 with open('prompt.txt', 'r') as f:
     long_sys_prompt = f.read()
 
 model_name = [
     'mlx-community/nanoLLaVA-1.5-4bit',
-    'mlx-community/Qwen2-VL-2B-Instruct-bf16', 
-    'mlx-community/Qwen2-VL-2B-Instruct-4bit',
-    'mlx-community/Qwen2-VL-7B-Instruct-bf16',
-    'mlx-community/Qwen2-VL-7B-Instruct-4bit',
-    'mlx-community/Llama-3.2-11B-Vision-Instruct-abliterated-4-bit',
+    # 'mlx-community/Qwen2-VL-2B-Instruct-bf16', 
+    # 'mlx-community/Qwen2-VL-2B-Instruct-4bit',
+    # 'mlx-community/Qwen2-VL-7B-Instruct-bf16',
+    # 'mlx-community/Qwen2-VL-7B-Instruct-4bit',
+    # 'mlx-community/SmolVLM-Instruct-4bit',
+    # 'mlx-community/SmolVLM-Instruct-8bit',
+    # 'mlx-community/SmolVLM-Instruct-bf16',
+    # 'mlx-community/paligemma2-3b-pt-896-4bit',
+    # 'mlx-community/paligemma-3b-mix-224-8bit',
+    # 'mlx-community/Llama-3.2-11B-Vision-Instruct-abliterated-4-bit',
+    # 'mlx-community/deepseek-vl2-small-8bit',
               ]
 
 img_resolution = {
+    # '1124x627': (1124, 627), # 1024x768 
     '1024x768': (1024, 768),
-    'high_res': (2402, 1342)
+    # 'high_res': (2402, 1342)
 }
 
 prompt_message = {
     'no_prompt' : [{"role": "user", "content": ""}],
-    'long_prompt': [{"role": "system", "content": long_sys_prompt}, {"role": "user", "content": ""}]
+    # 'long_prompt': [{"role": "system", "content": long_sys_prompt}, {"role": "user", "content": ""}]
 }
 max_tokens=1000
 temperature=0.3
@@ -33,7 +42,12 @@ for mn in model_name:
     model, processor = load(mn, trust_remote_code=True)
     config = model.config   
     for ir in img_resolution:
-        resized_images = [process_image(load_image(image), img_resolution[ir], None) for image in img_filepath]
+        resized_images = [
+            process_image(img=load_image(image), 
+                          resize_shape=img_resolution[ir], 
+                          image_processor=None,
+                          regime='exact') for image in img_filepath]
+        
         for pm in prompt_message:
             print()
             print(f'========== {mn, pm, ir} ==========')
