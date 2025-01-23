@@ -2,17 +2,24 @@ import json
 from pathlib import Path
 import pickle
 
-import mlx.nn as nn
-from mlx.utils import tree_flatten
+# import mlx.nn as nn
+import torch.nn as nn
+import torch.nn.quantized as nnq
+# from mlx.utils import tree_flatten
 from mlx.core import transpose
 import safetensors
 from safetensors.torch import save_file
 import torch
 
-import mlx.core as mx
+# import mlx.core as mx
 
 from .lora import LoRaLayer
 
+def flatten_parameters(module):
+    params = []
+    for name, param in module.named_parameters(recurse=True):
+        params.append((name, param))
+    return params
 
 def get_module_by_name(model, name):
     parts = name.split(".")
@@ -46,7 +53,7 @@ def get_peft_model(
         freeze_model(model)
 
     for name, module in model.language_model.named_modules():
-        if isinstance(module, nn.Linear) or isinstance(module, nn.QuantizedLinear):
+        if isinstance(module, nn.Linear) or isinstance(module, nnq.Linear):
             if name.split(".")[-1] in linear_layers:
                 lora_layer = LoRaLayer(module, rank, alpha, dropout)
                 set_module_by_name(model.language_model, name, lora_layer)
@@ -79,7 +86,7 @@ def freeze_model(model):
 
 def find_all_linear_names(model):
     cls = nn.Linear
-    quantized_cls = nn.QuantizedLinear
+    quantized_cls = nnq.Linear
     lora_module_names = set()
     multimodal_keywords = [
         "mm_projector",
@@ -105,9 +112,9 @@ def count_parameters(model):
     def nparams(m):
         if isinstance(m, (nn.QuantizedLinear, nn.QuantizedEmbedding)):
             return m.weight.size * (32 // m.bits)
-        return sum(v.size for _, v in tree_flatten(m.parameters()))
+        return sum(v.size for _, v in flatten_parameters(m.parameters()))
 
-    leaf_modules = tree_flatten(
+    leaf_modules = flatten_parameters(
         model.leaf_modules(), is_leaf=lambda m: isinstance(m, nn.Module)
     )
     total_p = sum(nparams(m) for _, m in leaf_modules) / 10**6
@@ -119,25 +126,20 @@ def print_trainable_parameters(model):
     def nparams(m):
         if isinstance(m, (nn.QuantizedLinear, nn.QuantizedEmbedding)):
             return m.weight.size * (32 // m.bits)
-        return sum(v.size for _, v in tree_flatten(m.parameters()))
+        return sum(v.size for _, v in flatten_parameters(m.parameters()))
 
-    leaf_modules = tree_flatten(
+    leaf_modules = flatten_parameters(
         model.leaf_modules(), is_leaf=lambda m: isinstance(m, nn.Module)
     )
     total_p = sum(nparams(m) for _, m in leaf_modules) / 10**6
     trainable_p = (
-        sum(v.size for _, v in tree_flatten(model.trainable_parameters())) / 10**6
+        sum(v.size for _, v in flatten_parameters(model.trainable_parameters())) / 10**6
     )
 
     print(
         f"#trainable params: {trainable_p} M || all params: {total_p} M || trainable%: {(trainable_p * 100 / total_p):.3f}%"
     )
 
-
-def torch_to_mx(a: torch.Tensor, *, dtype: str) -> mx.array:
-    # bfloat16 is not numpy convertible. Upcast to float32 to avoid precision loss
-    a = a.to(torch.float32) if dtype == "bfloat16" else a.to(getattr(torch, dtype))
-    return mx.array(a.numpy(), getattr(mx, dtype))
 
 def apply_lora_layers(model: nn.Module, 
                       adapter_path: str,
