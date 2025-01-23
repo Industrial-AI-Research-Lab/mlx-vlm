@@ -89,6 +89,12 @@ def parse_arguments():
         help="Ratio of vision tokens to keep during filtering topk tokens (between 0.1 and 1.0).",
         choices=[x / 10 for x in range(1, 11)],
     )
+    parser.add_argument(
+        "--max-kv-size",
+        type=float,
+        default=None,
+        help="Max kv size",
+    )
     return parser.parse_args()
 
 

@@ -1,8 +1,15 @@
 import json
 from pathlib import Path
+import pickle
 
 import mlx.nn as nn
 from mlx.utils import tree_flatten
+from mlx.core import transpose
+import safetensors
+from safetensors.torch import save_file
+import torch
+
+import mlx.core as mx
 
 from .lora import LoRaLayer
 
@@ -127,14 +134,21 @@ def print_trainable_parameters(model):
     )
 
 
-def apply_lora_layers(model: nn.Module, adapter_path: str) -> nn.Module:
+def torch_to_mx(a: torch.Tensor, *, dtype: str) -> mx.array:
+    # bfloat16 is not numpy convertible. Upcast to float32 to avoid precision loss
+    a = a.to(torch.float32) if dtype == "bfloat16" else a.to(getattr(torch, dtype))
+    return mx.array(a.numpy(), getattr(mx, dtype))
+
+def apply_lora_layers(model: nn.Module, 
+                      adapter_path: str,
+                      adapter_type: str = 'mlx_vlm') -> nn.Module:
     """
     Apply LoRA layers to the model.
 
     Args:
         model (nn.Module): The neural network model.
         adapter_path (str): Path to the adapter configuration file.
-
+        adapter_type (str): Type of adapter to use. Available options: 'mlx_vlm', 'peft', 'unsloth'
     Returns:
         nn.Module: The updated model with LoRA layers applied.
     """
@@ -156,7 +170,24 @@ def apply_lora_layers(model: nn.Module, adapter_path: str) -> nn.Module:
     else:
         model = get_peft_model(model, list_of_modules)
 
+
+    # TODO: remove debug lines
+    tensors = {}
+    dtype = "float16" # ["float16", "bfloat16", "float32"]
+    # dtype = getattr(mx, dtype)
+    with open('/Users/ngc436/Documents/projects/mlx-vlm/mlx_vlm/module_names_correspondance_dict.pkl', 'rb') as fp:
+        module_names_dict = pickle.load(fp)
+    with safetensors.safe_open(str(adapter_path / "adapters.safetensors"), framework="pt", device="cpu") as f:
+        # print(f.keys())
+        for key in f.keys():
+            t_res = torch_to_mx(f.get_tensor(key), dtype=dtype)
+            # t_res = f.get_tensor(key)
+            tensors[module_names_dict[key]] = transpose(t_res) # 0, 1
+            # tensors[module_names_dict[key]] = torch.transpose(t_res, 0, 1).contiguous()
+    mx.save_safetensors(str(adapter_path / "adapters_v2.safetensors"), tensors)
+    # safetensors.torch.save_file(tensors, str(adapter_path / "adapters_v2.safetensors"))
+
     # TODO: Use custom adapter name
-    model.load_weights(str(adapter_path / "adapters.safetensors"), strict=False)
+    model.load_weights(str(adapter_path / "adapters_v2.safetensors"), strict=False)
 
     return model
