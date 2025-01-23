@@ -1,13 +1,9 @@
-import inspect
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple, Union
-
-import mlx.core as mx
-import mlx.nn as nn
-import numpy as np
-
-from ..base import KVCache, LanguageModelOutput, create_attention_mask
-
+from typing import Optional, Dict, Union, List, Tuple
+import math
 
 @dataclass
 class TextConfig:
@@ -19,202 +15,173 @@ class TextConfig:
     rms_norm_eps: float
     vocab_size: int
     num_key_value_heads: Optional[int] = None
-    max_position_embeddings: Optional[int] = 32768
-    rope_theta: float = 1000000
+    rope_theta: float = 10000
     rope_traditional: bool = False
     rope_scaling: Optional[Dict[str, Union[float, str]]] = None
-    tie_word_embeddings: bool = True
+    tie_word_embeddings: bool = False
 
     def __post_init__(self):
         if self.num_key_value_heads is None:
             self.num_key_value_heads = self.num_attention_heads
 
-        if self.rope_scaling:
-            required_keys = {"mrope_section", "type"}
-            if not all(key in self.rope_scaling for key in required_keys):
-                raise ValueError(f"rope_scaling must contain keys {required_keys}")
-
-            if not self.rope_scaling["type"] in ["mrope", "default"]:
-                raise ValueError(f"rope_scaling type must be 'mrope' or 'default'")
-
     @classmethod
     def from_dict(cls, params):
-        return cls(
-            **{
-                k: v
-                for k, v in params.items()
-                if k in inspect.signature(cls).parameters
-            }
-        )
+        return cls(**{k: v for k, v in params.items() if k in cls.__dataclass_fields__})
 
+class RotaryEmbedding(nn.Module):
+    def __init__(self, dim: int, max_position_embeddings: int = 2048, base: int = 10000):
+        super().__init__()
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq)
+        self.max_seq_len_cached = max_position_embeddings
+        self.cos_cached = None
+        self.sin_cached = None
+        
+    def forward(self, x, seq_len=None):
+        if seq_len > self.max_seq_len_cached:
+            self.max_seq_len_cached = seq_len
+            t = torch.arange(self.max_seq_len_cached, device=x.device).type_as(self.inv_freq)
+            freqs = torch.einsum("i,j->ij", t, self.inv_freq)
+            emb = torch.cat((freqs, freqs), dim=-1).unsqueeze(0)
+            self.cos_cached = emb.cos()
+            self.sin_cached = emb.sin()
+        return self.cos_cached[:seq_len], self.sin_cached[:seq_len]
+
+def rotate_half(x):
+    x1, x2 = x[..., :x.shape[-1] // 2], x[..., x.shape[-1] // 2:]
+    return torch.cat((-x2, x1), dim=-1)
+
+def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
+    cos = cos[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
+    sin = sin[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
 
 class Attention(nn.Module):
-    def __init__(self, args: TextConfig):
+    def __init__(self, config: TextConfig):
         super().__init__()
-
-        dim = args.hidden_size
-        self.n_heads = n_heads = args.num_attention_heads
-        assert args.num_key_value_heads is not None
-        self.n_kv_heads = n_kv_heads = args.num_key_value_heads
-
-        self.head_dim = head_dim = args.hidden_size // n_heads
-        self.scale = head_dim**-0.5
-
-        self.q_proj = nn.Linear(dim, n_heads * head_dim, bias=True)
-        self.k_proj = nn.Linear(dim, n_kv_heads * head_dim, bias=True)
-        self.v_proj = nn.Linear(dim, n_kv_heads * head_dim, bias=True)
-        self.o_proj = nn.Linear(n_heads * head_dim, dim, bias=False)
-
-        self.rotary_emb = nn.RoPE(
-            head_dim,
-            base=args.rope_theta,
-            traditional=args.rope_traditional,
+        self.num_attention_heads = config.num_attention_heads
+        self.hidden_size = config.hidden_size
+        self.head_dim = config.hidden_size // config.num_attention_heads
+        self.num_key_value_heads = config.num_key_value_heads
+        self.max_position_embeddings = 2048  # Can be configured
+        
+        self.q_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        self.k_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        self.v_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        self.o_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        
+        self.rotary_emb = RotaryEmbedding(
+            self.head_dim,
+            max_position_embeddings=self.max_position_embeddings,
+            base=config.rope_theta,
         )
-
-    def __call__(
-        self,
-        x: mx.array,
-        mask: Optional[mx.array] = None,
-        cache: Optional[KVCache] = None,
-    ) -> mx.array:
-        B, L, D = x.shape
-
-        queries, keys, values = self.q_proj(x), self.k_proj(x), self.v_proj(x)
-
-        # Prepare the queries, keys and values for the attention computation
-        queries = queries.reshape(B, L, self.n_heads, self.head_dim).transpose(
-            0, 2, 1, 3
-        )
-        keys = keys.reshape(B, L, self.n_kv_heads, self.head_dim).transpose(0, 2, 1, 3)
-        values = values.reshape(B, L, self.n_kv_heads, self.head_dim).transpose(
-            0, 2, 1, 3
-        )
-
-        offset = cache.offset if cache else 0
-
-        if mask is not None:
-            mask = mask[..., : keys.shape[-2]]
-
-        queries = self.rotary_emb(queries, offset=offset)
-        keys = self.rotary_emb(keys, offset=offset)
-
-        if cache is not None:
-            keys, values = cache.update_and_fetch(keys, values)
-
-        output = mx.fast.scaled_dot_product_attention(
-            queries, keys, values, scale=self.scale, mask=mask
-        )
-        output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
-        return self.o_proj(output)
-
+        
+    def forward(self, hidden_states, attention_mask=None, past_key_value=None, position_ids=None):
+        batch_size, seq_length, _ = hidden_states.shape
+        
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
+        
+        query_states = query_states.view(batch_size, seq_length, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        key_states = key_states.view(batch_size, seq_length, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        value_states = value_states.view(batch_size, seq_length, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        
+        cos, sin = self.rotary_emb(value_states, seq_len=seq_length)
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+        
+        # Repeat KV heads if num_key_value_heads < num_attention_heads
+        if self.num_key_value_heads < self.num_attention_heads:
+            key_states = key_states.repeat_interleave(self.num_attention_heads // self.num_key_value_heads, dim=1)
+            value_states = value_states.repeat_interleave(self.num_attention_heads // self.num_key_value_heads, dim=1)
+        
+        attn_weights = torch.matmul(query_states, key_states.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        
+        if attention_mask is not None:
+            attn_weights = attn_weights + attention_mask
+            
+        attn_weights = F.softmax(attn_weights, dim=-1)
+        attn_output = torch.matmul(attn_weights, value_states)
+        
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.reshape(batch_size, seq_length, self.hidden_size)
+        
+        attn_output = self.o_proj(attn_output)
+        
+        return attn_output
 
 class MLP(nn.Module):
-    def __init__(self, dim, hidden_dim):
+    def __init__(self, config: TextConfig):
         super().__init__()
-        self.gate_proj = nn.Linear(dim, hidden_dim, bias=False)
-        self.down_proj = nn.Linear(hidden_dim, dim, bias=False)
-        self.up_proj = nn.Linear(dim, hidden_dim, bias=False)
+        self.gate_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
+        self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        
+    def forward(self, x):
+        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
 
-    def __call__(self, x) -> mx.array:
-        return self.down_proj(nn.silu(self.gate_proj(x)) * self.up_proj(x))
-
-
-class Qwen2VLDecoderLayer(nn.Module):
-    def __init__(self, args: TextConfig):
+class TransformerBlock(nn.Module):
+    def __init__(self, config: TextConfig):
         super().__init__()
-        self.num_attention_heads = args.num_attention_heads
-        self.hidden_size = args.hidden_size
-        self.self_attn = Attention(args)
-        self.mlp = MLP(args.hidden_size, args.intermediate_size)
-        self.input_layernorm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
-        self.post_attention_layernorm = nn.RMSNorm(
-            args.hidden_size, eps=args.rms_norm_eps
-        )
-        self.args = args
-
-    def __call__(
-        self,
-        x: mx.array,
-        mask: Optional[mx.array] = None,
-        cache: Optional[KVCache] = None,
-    ) -> mx.array:
-        r = self.self_attn(self.input_layernorm(x), mask, cache)
-        h = x + r
-        r = self.mlp(self.post_attention_layernorm(h))
-        out = h + r
-        return out
-
-
-class Qwen2Model(nn.Module):
-    def __init__(self, args: TextConfig):
-        super().__init__()
-        self.args = args
-        self.vocab_size = args.vocab_size
-        self.num_hidden_layers = args.num_hidden_layers
-        assert self.vocab_size > 0
-        self.embed_tokens = nn.Embedding(args.vocab_size, args.hidden_size)
-        self.layers = [
-            Qwen2VLDecoderLayer(args=args) for _ in range(args.num_hidden_layers)
-        ]
-        self.norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
-
-    def __call__(
-        self,
-        inputs: mx.array,
-        cache=None,
-        inputs_embeds: Optional[mx.array] = None,
-    ):
-        if inputs_embeds is None:
-            h = self.embed_tokens(inputs)
-        else:
-            h = inputs_embeds
-
-        mask = create_attention_mask(h, cache)
-
-        if cache is None:
-            cache = [None] * len(self.layers)
-
-        for layer, c in zip(self.layers, cache):
-            h = layer(h, mask, c)
-
-        return self.norm(h)
-
+        self.attention = Attention(config)
+        self.mlp = MLP(config)
+        self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
+        
+    def forward(self, hidden_states, attention_mask=None, position_ids=None):
+        # Self Attention
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = self.attention(hidden_states, attention_mask, position_ids=position_ids)
+        hidden_states = residual + hidden_states
+        
+        # MLP
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+        
+        return hidden_states
 
 class LanguageModel(nn.Module):
-    def __init__(self, args: TextConfig):
+    def __init__(self, config: TextConfig):
         super().__init__()
-        self.args = args
-        self.model_type = args.model_type
-        self.model = Qwen2Model(args)
-
-        if args.model_type != "qwen2_vl":
-            raise ValueError(f"Unsupported model type: {args.model_type}")
-
-        if not args.tie_word_embeddings:
-            self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
-
-    def __call__(
-        self,
-        inputs: mx.array,
-        cache=None,
-        inputs_embeds: Optional[mx.array] = None,
-        mask: Optional[mx.array] = None,
-    ):
-        out = self.model(inputs, cache=cache, inputs_embeds=inputs_embeds)
-        if self.args.tie_word_embeddings:
-            out = self.model.embed_tokens.as_linear(out)
+        self.config = config
+        self.model_type = config.model_type
+        
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.layers = nn.ModuleList([TransformerBlock(config) for _ in range(config.num_hidden_layers)])
+        self.norm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
+        
+        if not config.tie_word_embeddings:
+            self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        
+    def forward(self, input_ids, attention_mask=None, position_ids=None, inputs_embeds=None):
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+            
+        hidden_states = inputs_embeds
+        
+        for layer in self.layers:
+            hidden_states = layer(hidden_states, attention_mask, position_ids)
+            
+        hidden_states = self.norm(hidden_states)
+        
+        if self.config.tie_word_embeddings:
+            logits = F.linear(hidden_states, self.embed_tokens.weight)
         else:
-            out = self.lm_head(out)
-        return LanguageModelOutput(logits=out)
-
-    @property
-    def layers(self):
-        return self.model.layers
-
-    @property
-    def head_dim(self):
-        return self.args.hidden_size // self.args.num_attention_heads
-
-    @property
-    def n_kv_heads(self):
-        return self.args.num_key_value_heads
+            logits = self.lm_head(hidden_states)
+            
+        return logits
+        
+    def load_state_dict(self, state_dict, strict=True):
+        # Convert MLX weights to PyTorch format if needed
+        converted_state_dict = {}
+        for k, v in state_dict.items():
+            if isinstance(v, (list, tuple)):
+                v = torch.tensor(v)
+            converted_state_dict[k] = v
+            
+        return super().load_state_dict(converted_state_dict, strict=strict)

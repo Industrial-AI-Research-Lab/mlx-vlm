@@ -2,12 +2,27 @@ import json
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Union
+from typing import Union, Dict
+from PIL import Image
 
-import mlx.core as mx
-import mlx.nn as nn
-import numpy as np
-from mlx.utils import tree_flatten, tree_map
+import torch
+import torch.nn as nn
+from safetensors.torch import save_file
+from torch.utils.data import Dataset as TorchDataset
+from transformers import PreTrainedTokenizer
+
+from ..models.base import BaseImageProcessor
+
+
+def process_image(img, resize_shape, image_processor):
+    """Process image for the model."""
+    if isinstance(img, str):
+        img = Image.open(img).convert('RGB')
+    if resize_shape is not None and not isinstance(image_processor, BaseImageProcessor):
+        ratio = min(resize_shape[0] / img.width, resize_shape[1] / img.height)
+        new_size = (int(img.width * ratio), int(img.height * ratio))
+        img = img.resize(new_size)
+    return img
 
 
 def get_prompt(model_type, processor, conversation):
@@ -30,25 +45,18 @@ def get_prompt(model_type, processor, conversation):
     return prompt
 
 
-class Dataset:
+class Dataset(TorchDataset):
     def __init__(
         self,
-        hf_dataset,
-        config,
-        processor,
+        dataset,
+        config: dict,
+        processor: PreTrainedTokenizer,
         image_processor=None,
-        take=None,
-        split=None,
         image_resize_shape=None,
     ):
-        if split is not None:
-            self.dataset = hf_dataset[split]
-        else:
-            self.dataset = hf_dataset
-        if take is not None:
-            self.dataset = self.dataset.take(take)
-        self.processor = processor
+        self.dataset = dataset
         self.config = config
+        self.processor = processor
         self.image_processor = image_processor
         self.image_resize_shape = image_resize_shape
 
@@ -56,63 +64,42 @@ class Dataset:
         return len(self.dataset)
 
     def __getitem__(self, idx):
-        from mlx_vlm.utils import prepare_inputs
-
         item = self.dataset[idx]
-
+        
+        # Process images
         images = item["images"]
-        conversations = item["messages"]
-        prompts = []
+        if not isinstance(images, list):
+            images = [images]
+        
+        processed_images = []
+        for image in images:
+            img = process_image(image, self.image_resize_shape, self.image_processor)
+            if hasattr(self.processor, "image_processor"):
+                img = self.processor.image_processor.preprocess(images=[img])[0]
+            processed_images.append(img)
+        
+        pixel_values = torch.stack([torch.tensor(img) for img in processed_images])
 
-        if isinstance(conversations, list) and isinstance(conversations[0], list):
-            for conversation in conversations:
-                if self.config["model_type"] == "pixtral":
-                    conversation = [json.loads(i) for i in conversation]
-                    if len(conversations) > 1:
-                        warnings.warn(
-                            "Pixtral batch processing is not supported yet. Set batch size to 1."
-                        )
-
-                prompt = get_prompt(
-                    self.config["model_type"], self.processor, conversation
-                )
-                prompts.append(prompt)
-
+        # Process text
+        if isinstance(item["messages"], str):
+            messages = json.loads(item["messages"])
         else:
-            if self.config["model_type"] == "pixtral":
-                conversations = [json.loads(i) for i in conversations]
-            prompt = get_prompt(
-                self.config["model_type"], self.processor, conversations
-            )
-            prompts.append(prompt)
+            messages = item["messages"]
 
-        image_token_index = self.config["image_token_index"]
-
-        inputs = prepare_inputs(
-            self.processor,
-            images,
-            prompts,
-            image_token_index,
-            self.image_resize_shape,
+        model_inputs = self.processor(
+            text=messages,
+            padding=True,
+            return_tensors="pt",
         )
-        input_ids = inputs["input_ids"]
-        pixel_values = inputs["pixel_values"]
-        mask = inputs["attention_mask"]
-        kwargs = {
-            k: v
-            for k, v in inputs.items()
-            if k not in ["input_ids", "pixel_values", "attention_mask"]
-        }
 
-        if mask is None:
-            mask = mx.ones_like(input_ids)
+        # Add pixel values to model inputs
+        model_inputs["pixel_values"] = pixel_values
 
-        return {
-            "pixel_values": pixel_values,
-            "input_ids": input_ids,
-            "attention_mask": mask,
-            **kwargs,
-        }
+        # Convert all tensors to the same device
+        model_inputs = {k: v.squeeze(0) if isinstance(v, torch.Tensor) else v 
+                       for k, v in model_inputs.items()}
+
+        return model_inputs
 
 
 def grad_checkpoint(layer):
@@ -180,117 +167,50 @@ def default_loss(model, inputs, targets, lengths):
 class Trainer:
     def __init__(
         self,
-        model,
-        optimizer,
-        train_on_completions=False,
-        assistant_id=77091,
-        clip_gradients=None,
+        model: nn.Module,
+        optimizer: torch.optim.Optimizer,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ):
-        self.model = model
+        self.model = model.to(device)
         self.optimizer = optimizer
-        self.train_on_completions = train_on_completions
-        self.assistant_id = assistant_id
-        self.clip_gradients = clip_gradients
+        self.device = device
 
-    def loss_fn(self, model, batch):
-        pixel_values = batch["pixel_values"]
-        input_ids = batch["input_ids"]
-        attention_mask = batch["attention_mask"]
-        lengths = mx.sum(attention_mask, axis=1)
-        labels = input_ids[:, 1:]
-
-        batch_size, seq_length = input_ids.shape
-
-        if self.train_on_completions:
-            weight_mask = mx.ones_like(attention_mask)
-
-            assistant_response_index = np.where(input_ids == self.assistant_id)[1]
-            range_matrix = mx.repeat(
-                mx.expand_dims(mx.arange(seq_length), 0), batch_size, axis=0
-            )
-            assistant_mask = range_matrix <= mx.array(assistant_response_index).reshape(
-                -1, 1
-            )
-            # Apply the mask to weight_mask
-            weight_mask = mx.where(
-                assistant_mask, mx.zeros_like(weight_mask), weight_mask
-            )[:, 1:]
-        else:
-            weight_mask = None
-
-        input_ids = input_ids[:, :-1]
-
-        kwargs = {
-            k: v
-            for k, v in batch.items()
-            if k not in ["input_ids", "pixel_values", "attention_mask"]
-        }
+    def train_step(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        self.optimizer.zero_grad()
+        
+        # Move batch to device
+        batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+                for k, v in batch.items()}
 
         # Forward pass
-        outputs = model(input_ids, pixel_values, attention_mask, **kwargs)
+        outputs = self.model(**batch)
+        loss = outputs.loss
 
-        # Cast to float32
-        logits = outputs.logits.astype(mx.float32)
-
-        # Ensure logits and labels have the same sequence length
-        def align_logits_with_labels(logits, labels):
-            if logits.shape[1] < labels.shape[1]:
-                pad_length = labels.shape[1] - logits.shape[1]
-                pad_width = ((0, 0), (0, pad_length), (0, 0))
-                return mx.pad(logits, pad_width, mode="constant", constant_values=-100)
-            elif logits.shape[1] > labels.shape[1]:
-                return logits[:, -labels.shape[1] :, :]
-            return logits
-
-        logits = align_logits_with_labels(logits, labels)
-
-        length_mask = mx.arange(input_ids.shape[1])[None, :] < lengths[:, None]
-
-        # Compute loss only on non-padded tokens
-        ce = (
-            nn.losses.cross_entropy(
-                logits,
-                labels,
-                weights=weight_mask,
-            )
-            * length_mask
-        )
-        ntoks = length_mask.sum()
-        ce = ce.sum() / ntoks
-
-        return ce
-
-    def train_step(self, batch):
-        loss_and_grad_fn = nn.value_and_grad(self.model, self.loss_fn)
-        loss, grads = loss_and_grad_fn(self.model, batch)
-
-        # Add gradient clipping
-        if self.clip_gradients is not None:
-            grads = tree_map(
-                lambda g: mx.clip(g, -self.clip_gradients, self.clip_gradients), grads
-            )
-
-        self.optimizer.update(self.model, grads)
+        # Backward pass
+        loss.backward()
+        self.optimizer.step()
 
         return loss
 
-    @mx.compile
-    def train_epoch(self, dataloader):
-        total_loss = 0
-        for batch in dataloader:
-            loss = self.train_step(batch)
-            mx.eval(self.model, self.optimizer.state)
-            total_loss += loss
-        return total_loss / len(dataloader)
+    def save_adapter(self, save_path: Union[str, Path]):
+        """Save the LoRA adapter weights."""
+        save_path = Path(save_path)
+        save_path.mkdir(parents=True, exist_ok=True)
 
+        # Save adapter config
+        config = {
+            "rank": self.model.config.lora["rank"],
+            "alpha": self.model.config.lora["alpha"],
+            "dropout": self.model.config.lora["dropout"],
+        }
+        
+        with open(save_path / "adapter_config.json", "w") as f:
+            json.dump(config, f, indent=2)
 
-def save_adapter(
-    model: nn.Module,
-    adapter_file: Union[str, Path],
-):
-    path = Path(adapter_file)
-    if hasattr(model.config, "lora"):
-        with open(path.parent / "adapter_config.json", "w") as f:
-            json.dump(model.config.lora, f)
-    flattened_tree = tree_flatten(model.trainable_parameters())
-    mx.save_safetensors(str(adapter_file), dict(flattened_tree))
+        # Save adapter weights
+        adapter_weights = {}
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                adapter_weights[name] = param.detach().cpu()
+
+        save_file(adapter_weights, save_path / "adapters.safetensors")

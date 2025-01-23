@@ -2,12 +2,14 @@ import argparse
 import json
 import logging
 
-import mlx.optimizers as optim
+import torch
+import torch.optim as optim
 from datasets import load_dataset, load_from_disk
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .prompt_utils import apply_chat_template
-from .trainer import Dataset, Trainer, save_adapter
+from .trainer import Dataset, Trainer
 from .trainer.utils import find_all_linear_names, get_peft_model
 from .utils import load, load_image_processor
 
@@ -20,6 +22,9 @@ def custom_print(*args, **kwargs):
 
 
 def main(args):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"\033[32mUsing device: {device}\033[0m")
+
     logger.info(f"\033[32mLoading model from {args.model_path}\033[0m")
     model, processor = load(
         args.model_path, processor_config={"trust_remote_code": True}
@@ -74,6 +79,12 @@ def main(args):
         image_processor=image_processor,
         image_resize_shape=args.image_resize_shape,
     )
+    dataloader = DataLoader(
+        dataset, 
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=4
+    )
 
     logger.info(f"\033[32mSetting up LoRA\033[0m")
     list_of_modules = find_all_linear_names(model.language_model)
@@ -86,10 +97,10 @@ def main(args):
     )
 
     logger.info(f"\033[32mSetting up optimizer\033[0m")
-    optimizer = optim.Adam(learning_rate=args.learning_rate)
+    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
 
     logger.info(f"\033[32mSetting up trainer\033[0m")
-    trainer = Trainer(model, optimizer)
+    trainer = Trainer(model, optimizer, device=device)
 
     model.train()
 
@@ -97,13 +108,15 @@ def main(args):
     logger.info(f"\033[32mTraining model\033[0m")
     for epoch in range(args.epochs):
         if args.steps == 0:
-            args.steps = len(dataset) // args.batch_size
+            args.steps = len(dataloader)
 
-        progress_bar = tqdm(range(args.steps), position=0, leave=True)
-        for i in progress_bar:
-            loss = trainer.train_step(
-                dataset[i * args.batch_size : (i + 1) * args.batch_size]
-            )
+        progress_bar = tqdm(dataloader, position=0, leave=True)
+        for i, batch in enumerate(progress_bar):
+            if i >= args.steps:
+                break
+
+            loss = trainer.train_step(batch)
+            
             # Update progress bar
             progress_bar.update(1)
             progress_bar.set_postfix(
@@ -121,7 +134,7 @@ def main(args):
                 )
 
     # Save the adapter
-    save_adapter(model, args.output_path)
+    trainer.save_adapter(args.output_path)
 
 
 if __name__ == "__main__":
