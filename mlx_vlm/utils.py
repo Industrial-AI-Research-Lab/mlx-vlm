@@ -754,21 +754,24 @@ def load_image(image_source: Union[str, Path, BytesIO], timeout: int = 10):
     return image
 
 
-def resize_image(img, max_size):
-    ratio = min(max_size[0] / img.width, max_size[1] / img.height)
-    new_size = (int(img.width * ratio), int(img.height * ratio))
+def resize_image(img, max_size, regime='ratio'):
+    if regime == 'ratio':
+        ratio = min(max_size[0] / img.width, max_size[1] / img.height)
+        new_size = (int(img.width * ratio), int(img.height * ratio))
+    elif regime == 'exact':
+        new_size = max_size
     return img.resize(new_size)
 
 
-def process_image(img, resize_shape, image_processor):
+def process_image(img, resize_shape, image_processor, regime='ratio'):
     if isinstance(img, str):
         img = load_image(img)
     if resize_shape is not None and not isinstance(image_processor, BaseImageProcessor):
-        img = resize_image(img, resize_shape)
+        img = resize_image(img, resize_shape, regime=regime)
     return img
 
 
-def prepare_inputs(processor, images, prompts, image_token_index, resize_shape=None):
+def prepare_inputs(processor, images, prompts, image_token_index, resize_shape=None, regime='ratio'):
     if not isinstance(images, list):
         images = [images]
 
@@ -776,7 +779,7 @@ def prepare_inputs(processor, images, prompts, image_token_index, resize_shape=N
     image_processor = (
         processor.image_processor if hasattr(processor, "image_processor") else None
     )
-    images = [process_image(img, resize_shape, image_processor) for img in images]
+    images = [process_image(img, resize_shape, image_processor, regime=regime) for img in images]
 
     model_inputs = {}
 
@@ -990,6 +993,14 @@ def generate_step(
 
         n += 1
 
+def batch_generate(
+    model: nn.Module,
+    processor: PreTrainedTokenizer,
+    prompt: str,
+    image: Union[str, List[str]] = None,
+    **kwargs,
+):
+    raise NotImplementedError
 
 def stream_generate(
     model: nn.Module,

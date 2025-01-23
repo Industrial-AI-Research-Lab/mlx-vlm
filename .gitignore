@@ -21,3 +21,5 @@ var/
 *.egg
 .DS_Store
 *.log
+examples/test_img.png
+examples/prompt.txt

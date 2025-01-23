@@ -37,6 +37,12 @@ def parse_arguments():
         help="The path to the adapter weights.",
     )
     parser.add_argument(
+        "--adapter-type",
+        type=str,
+        default="peft",
+        help="Type of adapter to use. Available options: 'mlx_vlm', 'peft', 'unsloth'",
+    )
+    parser.add_argument(
         "--image",
         type=str,
         nargs="+",
@@ -88,6 +94,12 @@ def parse_arguments():
         type=float,
         help="Ratio of vision tokens to keep during filtering topk tokens (between 0.1 and 1.0).",
         choices=[x / 10 for x in range(1, 11)],
+    )
+    parser.add_argument(
+        "--max-kv-size",
+        type=float,
+        default=None,
+        help="Max kv size",
     )
     return parser.parse_args()
 
