@@ -37,6 +37,12 @@ def parse_arguments():
         help="The path to the adapter weights.",
     )
     parser.add_argument(
+        "--adapter-type",
+        type=str,
+        default="peft",
+        help="Type of adapter to use. Available options: 'mlx_vlm', 'peft', 'unsloth'",
+    )
+    parser.add_argument(
         "--image",
         type=str,
         nargs="+",

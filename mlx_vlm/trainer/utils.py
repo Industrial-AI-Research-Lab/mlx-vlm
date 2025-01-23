@@ -170,24 +170,26 @@ def apply_lora_layers(model: nn.Module,
     else:
         model = get_peft_model(model, list_of_modules)
 
+    adapter_fname = "adapters.safetensors"
 
-    # TODO: remove debug lines
-    tensors = {}
-    dtype = "float16" # ["float16", "bfloat16", "float32"]
-    # dtype = getattr(mx, dtype)
-    with open('/Users/ngc436/Documents/projects/mlx-vlm/mlx_vlm/module_names_correspondance_dict.pkl', 'rb') as fp:
-        module_names_dict = pickle.load(fp)
-    with safetensors.safe_open(str(adapter_path / "adapters.safetensors"), framework="pt", device="cpu") as f:
-        # print(f.keys())
-        for key in f.keys():
-            t_res = torch_to_mx(f.get_tensor(key), dtype=dtype)
-            # t_res = f.get_tensor(key)
-            tensors[module_names_dict[key]] = transpose(t_res) # 0, 1
-            # tensors[module_names_dict[key]] = torch.transpose(t_res, 0, 1).contiguous()
-    mx.save_safetensors(str(adapter_path / "adapters_v2.safetensors"), tensors)
-    # safetensors.torch.save_file(tensors, str(adapter_path / "adapters_v2.safetensors"))
+    if adapter_type == "mlx_vlm":
+        tensors = {}
+        dtype = "float16" # ["float16", "bfloat16", "float32"]
+        # dtype = getattr(mx, dtype)
+        with open('/Users/ngc436/Documents/projects/mlx-vlm/mlx_vlm/module_names_correspondance_dict.pkl', 'rb') as fp:
+            module_names_dict = pickle.load(fp)
+        with safetensors.safe_open(str(adapter_path / "adapters.safetensors"), framework="pt", device="cpu") as f:
+            # print(f.keys())
+            for key in f.keys():
+                t_res = torch_to_mx(f.get_tensor(key), dtype=dtype)
+                # t_res = f.get_tensor(key)
+                tensors[module_names_dict[key]] = transpose(t_res) # 0, 1
+                # tensors[module_names_dict[key]] = torch.transpose(t_res, 0, 1).contiguous()
+        mx.save_safetensors(str(adapter_path / "adapters_v2.safetensors"), tensors)
+        # safetensors.torch.save_file(tensors, str(adapter_path / "adapters_v2.safetensors"))
+        adapter_fname = "adapters_v2.safetensors"
 
     # TODO: Use custom adapter name
-    model.load_weights(str(adapter_path / "adapters_v2.safetensors"), strict=False)
+    model.load_weights(str(adapter_path / adapter_fname), strict=False)
 
     return model
