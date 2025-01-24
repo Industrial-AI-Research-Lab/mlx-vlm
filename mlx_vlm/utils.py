@@ -247,6 +247,7 @@ def load(
     path_or_hf_repo: str,
     adapter_path: Optional[str] = None,
     lazy: bool = False,
+    adapter_type: str = "peft",
     **kwargs,
 ) -> Tuple[nn.Module, Union[PreTrainedTokenizer, PreTrainedTokenizerFast]]:
     """
@@ -273,7 +274,7 @@ def load(
     model = load_model(model_path, lazy, **kwargs)
     if adapter_path is not None:
         # TODO: Support more modules than just language_model
-        model = apply_lora_layers(model, adapter_path)
+        model = apply_lora_layers(model, adapter_path, adapter_type=adapter_type)
         model.eval()
 
     image_processor = load_image_processor(model_path, **kwargs)

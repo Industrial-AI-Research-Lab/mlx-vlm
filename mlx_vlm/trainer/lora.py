@@ -12,11 +12,13 @@ class LoRaLayer(nn.Module):
         rank: int,
         alpha: float = 0.1,
         dropout: float = 0.0,
+        adapter_type: str = "peft",
     ):
         super().__init__()
 
         self.original_layer = linear
-
+        self.rank = rank
+        self.adapter_type = adapter_type
         self.dropout = nn.Dropout(p=dropout)
 
         output_dims, input_dims = linear.weight.shape
@@ -35,9 +37,12 @@ class LoRaLayer(nn.Module):
 
     def __call__(self, x):
         y = self.original_layer(x)
+        if self.adapter_type == "peft":
+            scale_factor = self.alpha / self.rank
+        else:
+            scale_factor = self.alpha
         lora_update = (self.dropout(x) @ self.A) @ self.B
-        return y + (self.alpha * lora_update).astype(x.dtype)
-
+        return y + (scale_factor * lora_update).astype(x.dtype)
 
 def replace_lora_with_linear(model):
     for i, layer in enumerate(model.layers):

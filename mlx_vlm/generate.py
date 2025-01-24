@@ -39,7 +39,7 @@ def parse_arguments():
     parser.add_argument(
         "--adapter-type",
         type=str,
-        default="peft",
+        default="mlx_vlm",
         help="Type of adapter to use. Available options: 'mlx_vlm', 'peft', 'unsloth'",
     )
     parser.add_argument(
@@ -104,11 +104,11 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def get_model_and_processors(model_path, adapter_path):
+def get_model_and_processors(model_path, adapter_path, adapter_type):
     model_path = get_model_path(model_path)
     config = load_config(model_path, trust_remote_code=True)
     model, processor = load(
-        model_path, adapter_path=adapter_path, lazy=False, trust_remote_code=True
+        model_path, adapter_path=adapter_path, lazy=False, trust_remote_code=True, adapter_type=adapter_type
     )
     return model, processor, config
 
@@ -118,7 +118,7 @@ def main():
     if isinstance(args.image, str):
         args.image = [args.image]
 
-    model, processor, config = get_model_and_processors(args.model, args.adapter_path)
+    model, processor, config = get_model_and_processors(args.model, args.adapter_path, args.adapter_type)
 
     prompt = codecs.decode(args.prompt, "unicode_escape")
 
