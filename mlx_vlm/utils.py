@@ -27,7 +27,7 @@ from transformers import (
 )
 
 from .models.base import BaseImageProcessor, KVCache, SimpleKVCache
-from .sample_utils import top_p_sampling
+from .sample_utils import top_p_sampling, top_k_sampling
 from .tokenizer_utils import load_tokenizer
 from .trainer import apply_lora_layers
 
@@ -846,7 +846,6 @@ def prepare_inputs(processor, images, prompts, image_token_index, resize_shape=N
 
     return model_inputs
 
-
 def generate_step(
     input_ids: mx.array,
     model: nn.Module,
@@ -854,10 +853,11 @@ def generate_step(
     mask,
     *,
     max_tokens: int = 256,
-    temp: float = 0.0,
+    temperature: float = 0.0,
     repetition_penalty: Optional[float] = None,
     repetition_context_size: Optional[int] = 20,
-    top_p: float = 1.0,
+    top_p: float = 1,
+    top_k: int = 0,
     logit_bias: Optional[Dict[int, float]] = None,
     **kwargs,
 ) -> Generator[Tuple[mx.array, mx.array], None, None]:
@@ -889,13 +889,14 @@ def generate_step(
             logits[:, indices] += values
         logprobs = logits - mx.logsumexp(logits)
 
-        if temp == 0:
+        if temperature == 0:
             token = mx.argmax(logits, axis=-1)
+        elif top_p > 0 and top_p < 1.0:
+            token = top_p_sampling(logits, top_p, temperature)
+        elif top_k > 0:
+            token = top_k_sampling(logits, top_k, temperature)
         else:
-            if top_p > 0 and top_p < 1.0:
-                token = top_p_sampling(logits, top_p, temp)
-            else:
-                token = mx.random.categorical(logits * (1 / temp))
+            token = mx.random.categorical(logits * (1 / temperature))
 
         return token, logprobs
 
