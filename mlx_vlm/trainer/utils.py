@@ -156,12 +156,24 @@ def apply_lora_layers(model: nn.Module,
 
     if not adapter_path.exists():
         raise FileNotFoundError(f"The adapter path does not exist: {adapter_path}")
+    
+    if adapter_type == "peft":
+        with open(adapter_path / "adapter_config.json", "r") as f:
+            config = json.load(f)
+            if "r" not in config:
+                raise ValueError("The adapter does not have lora params in the config")
+            config = {
+                "rank": config["r"],
+                "alpha": config["lora_alpha"],
+                "dropout": config["lora_dropout"]
+            }
 
-    # Check if the adapter has lora params in the config (adapter_config.json)
-    with open(adapter_path / "adapter_config.json", "r") as f:
-        config = json.load(f)
-        if "rank" not in config:
-            raise ValueError("The adapter does not have lora params in the config")
+    elif adapter_type == "mlx_vlm":
+        # Check if the adapter has lora params in the config (adapter_config.json)
+        with open(adapter_path / "adapter_config.json", "r") as f:
+            config = json.load(f)
+            if "rank" not in config:
+                raise ValueError("The adapter does not have lora params in the config")
 
     # TODO: add lora params to the config and load them here
     list_of_modules = find_all_linear_names(model.language_model.model)
@@ -177,7 +189,7 @@ def apply_lora_layers(model: nn.Module,
         dtype = "float16" # ["float16", "bfloat16", "float32"]
         with open('/Users/ngc436/Documents/projects/mlx-vlm/mlx_vlm/module_names_correspondance_dict.pkl', 'rb') as fp:
             module_names_dict = pickle.load(fp)
-        with safetensors.safe_open(str(adapter_path / "adapters.safetensors"), framework="pt", device="cpu") as f:
+        with safetensors.safe_open(str(adapter_path / "adapter_model.safetensors"), framework="pt", device="cpu") as f:
             for key in f.keys():
                 t_res = torch_to_mx(f.get_tensor(key), dtype=dtype)
                 tensors[module_names_dict[key]] = transpose(t_res) # 0, 1
