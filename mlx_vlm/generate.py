@@ -40,7 +40,6 @@ def parse_arguments():
         "--adapter-type",
         type=str,
         default="mlx_vlm",
-        help="Type of adapter to use. Available options: 'mlx_vlm', 'peft', 'unsloth'",
     )
     parser.add_argument(
         "--image",
