@@ -40,7 +40,7 @@ def set_module_by_name(model, name, new_module):
 
 
 def get_peft_model(
-    model, linear_layers, rank=10, alpha=0.1, dropout=0.1, freeze=True, verbose=True
+    model, linear_layers, rank=10, alpha=0.1, dropout=0.1, freeze=True, verbose=True, adapter_type="peft"
 ):
     if freeze:
         freeze_model(model)
@@ -48,7 +48,7 @@ def get_peft_model(
     for name, module in model.language_model.named_modules():
         if isinstance(module, nn.Linear) or isinstance(module, nn.QuantizedLinear):
             if name.split(".")[-1] in linear_layers:
-                lora_layer = LoRaLayer(module, rank, alpha, dropout)
+                lora_layer = LoRaLayer(module, rank, alpha, dropout, adapter_type=adapter_type)
                 set_module_by_name(model.language_model, name, lora_layer)
 
     model.config.lora = {}
@@ -166,9 +166,23 @@ def apply_lora_layers(model: nn.Module,
     # TODO: add lora params to the config and load them here
     list_of_modules = find_all_linear_names(model.language_model.model)
     if config is not None:
-        model = get_peft_model(model, list_of_modules, **config)
+        model = get_peft_model(model, list_of_modules, adapter_type=adapter_type, **config)
     else:
-        model = get_peft_model(model, list_of_modules)
+        model = get_peft_model(model, list_of_modules, adapter_type=adapter_type)
+
+    adapter_fname = "adapters.safetensors"
+
+    if adapter_type == "peft":
+        tensors = {}
+        dtype = "float16" # ["float16", "bfloat16", "float32"]
+        with open('/Users/ngc436/Documents/projects/mlx-vlm/mlx_vlm/module_names_correspondance_dict.pkl', 'rb') as fp:
+            module_names_dict = pickle.load(fp)
+        with safetensors.safe_open(str(adapter_path / "adapters.safetensors"), framework="pt", device="cpu") as f:
+            for key in f.keys():
+                t_res = torch_to_mx(f.get_tensor(key), dtype=dtype)
+                tensors[module_names_dict[key]] = transpose(t_res) # 0, 1
+        mx.save_safetensors(str(adapter_path / "adapters_v2.safetensors"), tensors)
+        adapter_fname = "adapters_v2.safetensors"
 
     adapter_fname = "adapters.safetensors"
 
