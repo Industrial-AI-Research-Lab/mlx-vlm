@@ -1116,7 +1116,7 @@ def generate(
 
     if verbose:
         print("=" * 10)
-        print("Image:", image, "\n")
+        # print("Image:", image, "\n")
         print("Prompt:", prompt)
 
     text = ""
