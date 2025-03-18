@@ -31,6 +31,9 @@ setup(
     license="MIT",
     install_requires=requirements,
     packages=find_packages(where=root_dir),
+    package_data={
+        "mlx_vlm": ["module_names_correspondance_dict.pkl"],
+    },
     python_requires=">=3.8",
     entry_points={
         "console_scripts": [
