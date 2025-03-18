@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import pickle
+import os
 
 import mlx.nn as nn
 from mlx.utils import tree_flatten
@@ -187,7 +188,11 @@ def apply_lora_layers(model: nn.Module,
     if adapter_type == "peft":
         tensors = {}
         dtype = "float16" # ["float16", "bfloat16", "float32"]
-        with open('/Users/ngc436/Documents/projects/mlx-vlm/mlx_vlm/module_names_correspondance_dict.pkl', 'rb') as fp:
+        # Get the path to the module_names_correspondance_dict.pkl file relative to this script
+        current_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+        module_names_dict_path = current_dir.parent / "module_names_correspondance_dict.pkl"
+        
+        with open(module_names_dict_path, 'rb') as fp:
             module_names_dict = pickle.load(fp)
         with safetensors.safe_open(str(adapter_path / "adapter_model.safetensors"), framework="pt", device="cpu") as f:
             for key in f.keys():
